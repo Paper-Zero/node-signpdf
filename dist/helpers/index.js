@@ -33,12 +33,20 @@ Object.defineProperty(exports, "removeTrailingNewLine", {
     return _removeTrailingNewLine.default;
   }
 });
+Object.defineProperty(exports, "streamAddPlaceholder", {
+  enumerable: true,
+  get: function () {
+    return _streamAddPlaceholder.default;
+  }
+});
 
 var _extractSignature = _interopRequireDefault(require("./extractSignature"));
 
 var _pdfkitAddPlaceholder = _interopRequireDefault(require("./pdfkitAddPlaceholder"));
 
 var _plainAddPlaceholder = _interopRequireDefault(require("./plainAddPlaceholder"));
+
+var _streamAddPlaceholder = _interopRequireDefault(require("./streamAddPlaceholder"));
 
 var _removeTrailingNewLine = _interopRequireDefault(require("./removeTrailingNewLine"));
 
