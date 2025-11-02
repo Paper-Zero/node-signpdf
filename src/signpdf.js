@@ -5,6 +5,8 @@ import {DEFAULT_BYTE_RANGE_PLACEHOLDER} from './helpers/const';
 
 export {default as SignPdfError} from './SignPdfError';
 export * from './helpers';
+export {StreamSigner} from './StreamSigner';
+export {default as streamSigner} from './StreamSigner';
 
 export * from './helpers/const';
 

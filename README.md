@@ -59,7 +59,7 @@ const signedPdf = signer.sign(
 * This lib:
   * requires the [signature placeholder](#append-a-signature-placeholder) to already be in the document (There are helpers included that can try to add it);
   * requires the `Contents` descriptor in the `Sig` be placed after the `ByteRange` one;
-  * takes `Buffer`s of the PDF and a P12 certificate to use when [signing](#generate-and-apply-signature);
+  * provides both a Buffer-based signer and the new stream-oriented `StreamSigner` which signs PDFs directly from disk; the former takes `Buffer`s while the latter works with file paths;
   * does cover only basic scenarios of signing a PDF. If you have suggestions, ideas or anything, please [CONTRIBUTE](#contributing);
 * Feel free to copy and paste any part of this code. See its defined [Purpose](#purpose).
 
@@ -77,6 +77,7 @@ This package provides two [helpers](https://github.com/vbuch/node-signpdf/blob/m
 
 * pdfkitAddPlaceholder
 * plainAddPlaceholder
+* streamAddPlaceholder (file-system helper that writes the placeholder back to disk)
 
 **Note:** Signing in detached mode makes the signature length independent of the PDF's content length, but it may still vary between different signing certificates. So every time you sign using the same P12 you will get the same length of the output signature, no matter the length of the signed content. It is safe to find out the actual signature length your certificate produces and use it to properly configure the placeholder length.
 
@@ -98,6 +99,29 @@ const pdfToSign = pdfkitAddPlaceholder({
 ### Generate and apply signature
 
 That's where the Signer kicks in. Given a PDF and a P12 certificate a signature is generated in detached mode and is replaced in the placeholder. This is best demonstrated in [the tests](https://github.com/vbuch/node-signpdf/blob/master/src/signpdf.test.js#L122).
+
+### StreamSigner for large files
+
+Starting with this release you can sign arbitrarily large PDFs without loading them in memory. The `StreamSigner` class exposes the familiar `sign(pdfPath, p12Buffer, options?)` API but operates directly on the file system. Internally it streams the PDF twice (once to compute the digest and once to patch the signature) and keeps the memory footprint under a few megabytes.
+
+```js
+import {StreamSigner} from 'node-signpdf';
+
+const signer = new StreamSigner();
+await signer.sign(
+  '/tmp/input-with-placeholder.pdf',
+  fs.readFileSync(PATH_TO_P12_CERTIFICATE),
+  {passphrase: 'optional-password'},
+);
+```
+
+`StreamSigner` writes the signed data back to the same file so no intermediate Buffer is ever created. The helper `streamAddPlaceholder` can be used when a placeholder needs to be appended to an existing PDF stored on disk.
+
+#### Compatibility
+
+* The classic `signer.sign(pdfBuffer, p12Buffer)` flow continues to work for in-memory use cases.
+* Both signers produce PKCS#7 (`/SubFilter /adbe.pkcs7.detached`) signatures compatible with ICP-Brasil A1 certificates.
+* Timestamping (TSA) is not yet supported in streaming mode and is planned for a future release.
 
 ## Dependencies
 

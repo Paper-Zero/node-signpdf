@@ -8,4 +8,5 @@ export class SignPdf {
 }
 declare const _default: SignPdf;
 export default _default;
+export { StreamSigner, default as streamSigner } from "./StreamSigner";
 //# sourceMappingURL=signpdf.d.ts.map
