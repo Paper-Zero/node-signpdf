@@ -1,6 +1,6 @@
 import PDFDocument from 'pdfkit';
 import pdfkitAddPlaceholder from './pdfkitAddPlaceholder';
-import {SUBFILTER_ETSI_CADES_DETACHED} from './const';
+import {SUBFILTER_ETSI_CADES_DETACHED, DEFAULT_BYTE_RANGE_PLACEHOLDER} from './const';
 import PDFObject from './pdfkit/pdfobject';
 
 describe('pdfkitAddPlaceholder', () => {
@@ -19,9 +19,9 @@ describe('pdfkitAddPlaceholder', () => {
         expect(pdf.page.dictionary.data.Annots[0].data.Subtype).toEqual('Widget');
         expect(pdf.page.dictionary.data.Annots[0].data.V.data.ByteRange).toEqual([
             0,
-            '**********',
-            '**********',
-            '**********',
+            DEFAULT_BYTE_RANGE_PLACEHOLDER,
+            DEFAULT_BYTE_RANGE_PLACEHOLDER,
+            DEFAULT_BYTE_RANGE_PLACEHOLDER,
         ]);
     });
 

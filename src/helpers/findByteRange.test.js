@@ -1,6 +1,7 @@
 import fs from 'fs';
 import PDFDocument from 'pdfkit';
 import findByteRange from './findByteRange';
+import {DEFAULT_BYTE_RANGE_PLACEHOLDER} from './const';
 import SignPdfError from '../SignPdfError';
 import plainAddPlaceholder from './plainAddPlaceholder';
 
@@ -42,11 +43,11 @@ describe('findByteRange', () => {
 
             const {byteRangePlaceholder, byteRanges} = findByteRange(pdfBuffer);
 
-            expect(byteRangePlaceholder).toBe('/ByteRange [0 /********** /********** /**********]');
+            expect(byteRangePlaceholder).toBe(`/ByteRange [0 /${DEFAULT_BYTE_RANGE_PLACEHOLDER} /${DEFAULT_BYTE_RANGE_PLACEHOLDER} /${DEFAULT_BYTE_RANGE_PLACEHOLDER}]`);
             expect(byteRanges[0][0]).toBe('0');
-            expect(byteRanges[0][1]).toBe('/**********');
-            expect(byteRanges[0][2]).toBe('/**********');
-            expect(byteRanges[0][3]).toBe('/**********');
+            expect(byteRanges[0][1]).toBe(`/${DEFAULT_BYTE_RANGE_PLACEHOLDER}`);
+            expect(byteRanges[0][2]).toBe(`/${DEFAULT_BYTE_RANGE_PLACEHOLDER}`);
+            expect(byteRanges[0][3]).toBe(`/${DEFAULT_BYTE_RANGE_PLACEHOLDER}`);
         } catch (e) {
             expect('here').not.toBe('here');
         }
