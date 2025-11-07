@@ -1,18 +1,22 @@
+/* eslint-disable no-use-before-define */
+/* eslint-disable import/extensions */
+/* eslint-disable no-await-in-loop */
+/* eslint-disable no-restricted-syntax */
 /**
  * Exemplo de uso do StreamSigner para assinar PDFs grandes
  * Este exemplo demonstra como usar a nova implementação streaming
  * do node-signpdf para assinar documentos de qualquer tamanho.
  */
 
-import { promises as fs } from 'fs';
+import {promises as fs} from 'fs';
 import path from 'path';
-import { StreamSigner } from '../src/StreamSigner.js';
+import {StreamSigner} from '../src/StreamSigner.js';
 import streamAddPlaceholder from '../src/helpers/streamAddPlaceholder/index.js';
 
 async function exemploStreamSigner() {
     try {
         console.log('🚀 Exemplo StreamSigner - Assinatura de PDFs Grandes');
-        console.log('=' .repeat(60));
+        console.log('='.repeat(60));
 
         // Caminhos dos arquivos
         const certificadoPath = './resources/certificate.p12'; // Certificado de teste
@@ -38,14 +42,14 @@ async function exemploStreamSigner() {
         // Passo 2: Adicionar placeholder de assinatura usando streams
         console.log('\n2️⃣ Adicionando placeholder de assinatura...');
         const startPlaceholder = Date.now();
-        
+
         await streamAddPlaceholder({
             pdfPath: pdfOriginal,
             outputPath: pdfComPlaceholder,
             reason: 'Assinatura Digital via StreamSigner',
             contactInfo: 'contato@paperzero.com',
             name: 'Certificado A1 PaperZero',
-            location: 'São Paulo, Brasil'
+            location: 'São Paulo, Brasil',
         });
 
         const timePlaceholder = Date.now() - startPlaceholder;
@@ -54,20 +58,20 @@ async function exemploStreamSigner() {
         // Passo 3: Assinar PDF usando StreamSigner
         console.log('\n3️⃣ Assinando PDF com StreamSigner...');
         const startSigning = Date.now();
-        
+
         const streamSigner = new StreamSigner();
         const certificado = await fs.readFile(certificadoPath);
-        
+
         // Monitorar uso de memória
         const initialMemory = process.memoryUsage();
-        
+
         const resultPath = await streamSigner.sign(
             pdfComPlaceholder,
             certificado,
             {
                 passphrase: '', // Senha do certificado (vazio para certificados de teste)
-                outputPath: pdfAssinado
-            }
+                outputPath: pdfAssinado,
+            },
         );
 
         const finalMemory = process.memoryUsage();
@@ -82,7 +86,7 @@ async function exemploStreamSigner() {
         console.log('\n4️⃣ Verificando arquivo assinado...');
         const statsOriginal = await fs.stat(pdfOriginal);
         const statsAssinado = await fs.stat(pdfAssinado);
-        
+
         console.log(`📏 Tamanho original: ${formatBytes(statsOriginal.size)}`);
         console.log(`📏 Tamanho assinado: ${formatBytes(statsAssinado.size)}`);
         console.log(`🔐 Assinatura aplicada: ${streamSigner.lastSignature ? 'Sim' : 'Não'}`);
@@ -97,7 +101,6 @@ async function exemploStreamSigner() {
         console.log('   • Use Adobe Reader para verificar a assinatura');
         console.log('   • Para certificados ICP-Brasil, use a senha correta');
         console.log('   • O StreamSigner funciona com PDFs de qualquer tamanho');
-
     } catch (error) {
         console.error('❌ Erro durante o processo:', error.message);
         throw error;
@@ -109,7 +112,7 @@ async function exemploStreamSigner() {
  */
 async function criarPdfDeTeste(caminho, tamanho) {
     const dir = path.dirname(caminho);
-    await fs.mkdir(dir, { recursive: true });
+    await fs.mkdir(dir, {recursive: true});
 
     // Criar PDF básico
     const pdfBasico = `%PDF-1.4
@@ -147,8 +150,8 @@ stream
     // Adicionar conteúdo para atingir o tamanho desejado
     const conteudoBase = 'BT /F1 12 Tf 100 700 Td (PDF de teste para StreamSigner) Tj ET\n';
     const padding = 'q 100 0 0 100 100 600 cm /Im1 Do Q\n'.repeat(Math.floor((tamanho - 500) / 50));
-    
-    const pdfFinal = pdfBasico + conteudoBase + padding + `
+
+    const pdfFinal = `${pdfBasico + conteudoBase + padding}
 endstream
 endobj
 
@@ -176,12 +179,12 @@ ${tamanho - 50}
  */
 function formatBytes(bytes) {
     if (bytes === 0) return '0 Bytes';
-    
+
     const k = 1024;
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
-    
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+
+    return `${parseFloat((bytes / k ** i).toFixed(2))} ${sizes[i]}`;
 }
 
 /**
@@ -189,14 +192,14 @@ function formatBytes(bytes) {
  */
 async function exemploComparacaoPerformance() {
     console.log('\n📊 Comparação de Performance: SignPdf vs StreamSigner');
-    console.log('=' .repeat(60));
+    console.log('='.repeat(60));
 
     const tamanhos = [1024 * 1024, 10 * 1024 * 1024, 50 * 1024 * 1024]; // 1MB, 10MB, 50MB
     const resultados = [];
 
     for (const tamanho of tamanhos) {
         console.log(`\nTestando PDF de ${formatBytes(tamanho)}...`);
-        
+
         const pdfPath = `./temp/test-${tamanho}.pdf`;
         await criarPdfDeTeste(pdfPath, tamanho);
 
@@ -206,7 +209,7 @@ async function exemploComparacaoPerformance() {
 
         try {
             // Simular apenas o cálculo de hash (parte mais intensiva)
-            const { calculateFileHash } = await import('../src/helpers/streamUtils.js');
+            const {calculateFileHash} = await import('../src/helpers/streamUtils.js');
             await calculateFileHash(pdfPath);
 
             const endTime = Date.now();
@@ -215,7 +218,7 @@ async function exemploComparacaoPerformance() {
             resultados.push({
                 tamanho: formatBytes(tamanho),
                 tempo: `${endTime - startTime}ms`,
-                memoria: `${((endMemory.heapUsed - startMemory.heapUsed) / 1024 / 1024).toFixed(2)} MB`
+                memoria: `${((endMemory.heapUsed - startMemory.heapUsed) / 1024 / 1024).toFixed(2)} MB`,
             });
 
             console.log(`  ✅ Processado em ${endTime - startTime}ms`);
@@ -224,7 +227,7 @@ async function exemploComparacaoPerformance() {
             resultados.push({
                 tamanho: formatBytes(tamanho),
                 tempo: 'ERRO',
-                memoria: 'N/A'
+                memoria: 'N/A',
             });
         }
 
@@ -252,5 +255,5 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
 export {
     exemploStreamSigner,
-    exemploComparacaoPerformance
+    exemploComparacaoPerformance,
 };

@@ -4,7 +4,7 @@
  */
 export class StreamSigner {
     byteRangePlaceholder: string;
-    lastSignature: string;
+    lastSignature: any;
     /**
      * Assina um PDF usando streaming para suportar arquivos grandes
      * @param {string} pdfPath - Caminho para o arquivo PDF
@@ -13,40 +13,18 @@ export class StreamSigner {
      * @returns {Promise<string>} Caminho do arquivo assinado
      */
     sign(pdfPath: string, p12Buffer: Buffer, additionalOptions?: any): Promise<string>;
-    /**
-     * Prepara o certificado P12 para assinatura
-     * @param {Buffer} p12Buffer
-     * @param {Object} options
-     * @returns {Object} privateKey e certificate
-     */
-    _prepareCertificate(p12Buffer: Buffer, options: any): any;
-    /**
-     * Calcula hash SHA-256 do conteúdo que será assinado usando streams
-     * @param {string} pdfPath
-     * @param {Array} byteRange
-     * @param {string} actualByteRange
-     * @param {number} byteRangePos
-     * @returns {Promise<Buffer>} Hash do conteúdo
-     */
-    _calculateContentHashStream(pdfPath: string, byteRange: any[], actualByteRange: string, byteRangePos: number): Promise<Buffer>;
-    /**
-     * Cria assinatura PKCS#7 para o hash do conteúdo
-     * @param {Buffer} contentHash
-     * @param {Object} privateKey
-     * @param {Object} certificate
-     * @returns {Buffer} Assinatura em formato raw
-     */
-    _createPKCS7Signature(contentHash: Buffer, privateKey: any, certificate: any): Buffer;
-    /**
-     * Escreve o PDF final com a assinatura inserida usando streams
-     * @param {string} inputPath
-     * @param {string} outputPath
-     * @param {Array} byteRange
-     * @param {string} actualByteRange
-     * @param {Object} byteRangeInfo
-     * @param {Buffer} signature
-     */
-    _writeSignedPdfStream(inputPath: string, outputPath: string, byteRange: any[], actualByteRange: string, byteRangeInfo: any, signature: Buffer): Promise<any>;
+    validateInputs(pdfPath: any, p12Buffer: any): void;
+    checkFileExists(pdfPath: any): Promise<void>;
+    calculateByteRange(pdfPath: any, byteRangeInfo: any): Promise<number[]>;
+    formatByteRange(byteRange: any): string;
+    prepareCertificate(p12Buffer: any, options: any): {
+        privateKey: any;
+        certificate: never;
+    };
+    calculateContentHash(pdfPath: any, byteRange: any, actualByteRange: any, byteRangePos: any): Promise<any>;
+    createPKCS7Signature(contentHash: any, privateKey: any, certificate: any): Buffer;
+    validateSignatureSize(signature: any, placeholderLength: any): void;
+    writeSignedPdf(inputPath: any, outputPath: any, byteRange: any, actualByteRange: any, byteRangeInfo: any, signature: any): Promise<any>;
 }
 declare const _default: StreamSigner;
 export default _default;

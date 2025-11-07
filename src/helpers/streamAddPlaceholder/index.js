@@ -1,8 +1,9 @@
-import { createReadStream, createWriteStream, promises as fs } from 'fs';
-import { pipeline } from 'stream/promises';
-import { Transform } from 'stream';
+/* eslint-disable prefer-destructuring */
+/* eslint-disable no-underscore-dangle */
+/* eslint-disable no-use-before-define */
+import {createReadStream, createWriteStream, promises as fs} from 'fs';
 
-import { DEFAULT_SIGNATURE_LENGTH, SUBFILTER_ADOBE_PKCS7_DETACHED } from '../const';
+import {DEFAULT_SIGNATURE_LENGTH, SUBFILTER_ADOBE_PKCS7_DETACHED, DEFAULT_BYTE_RANGE_PLACEHOLDER} from '../const';
 import SignPdfError from '../../SignPdfError';
 
 /**
@@ -41,7 +42,7 @@ const streamAddPlaceholder = async ({
 
     // Primeiro, analisar a estrutura do PDF para encontrar onde inserir a assinatura
     const pdfInfo = await _analyzePdfStructure(pdfPath);
-    
+
     // Gerar os objetos necessários para a assinatura
     const signatureObjects = _generateSignatureObjects({
         reason,
@@ -71,7 +72,7 @@ async function _analyzePdfStructure(pdfPath) {
     return new Promise((resolve, reject) => {
         const stream = createReadStream(pdfPath);
         let buffer = Buffer.alloc(0);
-        let xrefOffset = 0;
+        const xrefOffset = 0;
         let trailerFound = false;
         let rootRef = null;
         let pagesRef = null;
@@ -79,7 +80,7 @@ async function _analyzePdfStructure(pdfPath) {
 
         stream.on('data', (chunk) => {
             buffer = Buffer.concat([buffer, chunk]);
-            
+
             // Procurar por xref
             const xrefMatch = buffer.toString('latin1').match(/xref\s+(\d+)\s+(\d+)/);
             if (xrefMatch && !trailerFound) {
@@ -117,7 +118,7 @@ async function _analyzePdfStructure(pdfPath) {
             }
 
             const fileStats = await fs.stat(pdfPath);
-            
+
             resolve({
                 rootRef,
                 pagesRef,
@@ -134,17 +135,19 @@ async function _analyzePdfStructure(pdfPath) {
 /**
  * Gera os objetos necessários para inserir a assinatura no PDF
  */
-function _generateSignatureObjects({ reason, contactInfo, name, location, signatureLength, subFilter, pdfInfo }) {
+function _generateSignatureObjects({
+    reason, contactInfo, name, location, signatureLength, subFilter, pdfInfo,
+}) {
     const nextObjNum = pdfInfo.maxObjNum + 1;
     const acroFormRef = `${nextObjNum} 0 R`;
     const signatureRef = `${nextObjNum + 1} 0 R`;
     const annotRef = `${nextObjNum + 2} 0 R`;
 
     // Placeholder para ByteRange - será preenchido durante assinatura
-    const byteRangePlaceholder = '/**********';
-    
+    const byteRangePlaceholder = DEFAULT_BYTE_RANGE_PLACEHOLDER;
+
     // Placeholder para assinatura - será preenchido durante assinatura
-    const signaturePlaceholder = '<' + '0'.repeat(signatureLength) + '>';
+    const signaturePlaceholder = `<${'0'.repeat(signatureLength)}>`;
 
     // Objeto AcroForm
     const acroFormObj = `${nextObjNum} 0 obj
@@ -205,47 +208,42 @@ async function _writePdfWithPlaceholder(inputPath, outputPath, pdfInfo, signatur
     const readStream = createReadStream(inputPath);
     const writeStream = createWriteStream(outputPath);
 
-    let currentPos = 0;
     let xrefStarted = false;
     let buffer = Buffer.alloc(0);
 
     return new Promise((resolve, reject) => {
         readStream.on('data', (chunk) => {
             buffer = Buffer.concat([buffer, chunk]);
-            
+
             // Procurar pelo início da tabela xref
             if (!xrefStarted) {
                 const xrefIndex = buffer.indexOf('xref');
-                
+
                 if (xrefIndex !== -1) {
                     // Escrever tudo antes do xref
                     writeStream.write(buffer.slice(0, xrefIndex));
-                    
+
                     // Inserir objetos de assinatura antes do xref
-                    writeStream.write(Buffer.from('\n' + signatureObjects.acroFormObj + '\n'));
-                    writeStream.write(Buffer.from(signatureObjects.signatureObj + '\n'));
-                    writeStream.write(Buffer.from(signatureObjects.annotationObj + '\n'));
-                    
+                    writeStream.write(Buffer.from(`\n${signatureObjects.acroFormObj}\n`));
+                    writeStream.write(Buffer.from(`${signatureObjects.signatureObj}\n`));
+                    writeStream.write(Buffer.from(`${signatureObjects.annotationObj}\n`));
+
                     // Continuar com xref modificado
                     const xrefContent = buffer.slice(xrefIndex);
                     const modifiedXref = _modifyXref(xrefContent, signatureObjects, pdfInfo);
                     writeStream.write(modifiedXref);
-                    
+
                     xrefStarted = true;
                     buffer = Buffer.alloc(0);
-                } else {
-                    // Escrever o chunk se não encontramos xref ainda
-                    if (buffer.length > chunk.length) {
-                        writeStream.write(buffer.slice(0, -chunk.length));
-                        buffer = buffer.slice(-chunk.length);
-                    }
+                // Escrever o chunk se não encontramos xref ainda
+                } else if (buffer.length > chunk.length) {
+                    writeStream.write(buffer.slice(0, -chunk.length));
+                    buffer = buffer.slice(-chunk.length);
                 }
             } else {
                 // Após xref, escrever normalmente
                 writeStream.write(chunk);
             }
-            
-            currentPos += chunk.length;
         });
 
         readStream.on('end', () => {
@@ -265,9 +263,9 @@ async function _writePdfWithPlaceholder(inputPath, outputPath, pdfInfo, signatur
 /**
  * Modifica a tabela xref para incluir os novos objetos
  */
-function _modifyXref(xrefContent, signatureObjects, pdfInfo) {
+function _modifyXref(xrefContent, signatureObjects) {
     let content = xrefContent.toString('latin1');
-    
+
     // Encontrar linha de contagem de objetos
     const xrefMatch = content.match(/xref\s+(\d+)\s+(\d+)/);
     if (!xrefMatch) {
@@ -282,19 +280,19 @@ function _modifyXref(xrefContent, signatureObjects, pdfInfo) {
     content = content.replace(/xref\s+\d+\s+\d+/, `xref\n${startNum} ${newCount}`);
 
     // Adicionar entradas para os novos objetos (calcular offsets aproximados)
-    const newEntries = `${(signatureObjects.nextObjNum - 3).toString().padStart(10, '0')} 00000 n \n` +
-                      `${(signatureObjects.nextObjNum - 2).toString().padStart(10, '0')} 00000 n \n` +
-                      `${(signatureObjects.nextObjNum - 1).toString().padStart(10, '0')} 00000 n \n`;
+    const newEntries = `${(signatureObjects.nextObjNum - 3).toString().padStart(10, '0')} 00000 n \n`
+                      + `${(signatureObjects.nextObjNum - 2).toString().padStart(10, '0')} 00000 n \n`
+                      + `${(signatureObjects.nextObjNum - 1).toString().padStart(10, '0')} 00000 n \n`;
 
     // Inserir antes do trailer
     const trailerIndex = content.indexOf('trailer');
     if (trailerIndex !== -1) {
         content = content.slice(0, trailerIndex) + newEntries + content.slice(trailerIndex);
-        
+
         // Modificar trailer para incluir AcroForm
         content = content.replace(
             /trailer\s*<<([^>]*)>>/,
-            `trailer\n<<$1/AcroForm ${signatureObjects.acroFormRef}>>`
+            `trailer\n<<$1/AcroForm ${signatureObjects.acroFormRef}>>`,
         );
     }
 

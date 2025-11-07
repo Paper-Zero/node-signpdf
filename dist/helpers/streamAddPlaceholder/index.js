@@ -7,15 +7,17 @@ exports.default = void 0;
 
 var _fs = require("fs");
 
-var _promises = require("stream/promises");
-
-var _stream = require("stream");
-
 var _const = require("../const");
 
 var _SignPdfError = _interopRequireDefault(require("../../SignPdfError"));
 
 function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
+
+/* eslint-disable prefer-destructuring */
+
+/* eslint-disable no-underscore-dangle */
+
+/* eslint-disable no-use-before-define */
 
 /**
  * Adiciona um placeholder de assinatura ao PDF usando streams
@@ -75,7 +77,7 @@ async function _analyzePdfStructure(pdfPath) {
   return new Promise((resolve, reject) => {
     const stream = (0, _fs.createReadStream)(pdfPath);
     let buffer = Buffer.alloc(0);
-    let xrefOffset = 0;
+    const xrefOffset = 0;
     let trailerFound = false;
     let rootRef = null;
     let pagesRef = null;
@@ -149,9 +151,9 @@ function _generateSignatureObjects({
   const signatureRef = `${nextObjNum + 1} 0 R`;
   const annotRef = `${nextObjNum + 2} 0 R`; // Placeholder para ByteRange - será preenchido durante assinatura
 
-  const byteRangePlaceholder = '/**********'; // Placeholder para assinatura - será preenchido durante assinatura
+  const byteRangePlaceholder = _const.DEFAULT_BYTE_RANGE_PLACEHOLDER; // Placeholder para assinatura - será preenchido durante assinatura
 
-  const signaturePlaceholder = '<' + '0'.repeat(signatureLength) + '>'; // Objeto AcroForm
+  const signaturePlaceholder = `<${'0'.repeat(signatureLength)}>`; // Objeto AcroForm
 
   const acroFormObj = `${nextObjNum} 0 obj
 <<
@@ -208,7 +210,6 @@ endobj
 async function _writePdfWithPlaceholder(inputPath, outputPath, pdfInfo, signatureObjects) {
   const readStream = (0, _fs.createReadStream)(inputPath);
   const writeStream = (0, _fs.createWriteStream)(outputPath);
-  let currentPos = 0;
   let xrefStarted = false;
   let buffer = Buffer.alloc(0);
   return new Promise((resolve, reject) => {
@@ -222,9 +223,9 @@ async function _writePdfWithPlaceholder(inputPath, outputPath, pdfInfo, signatur
           // Escrever tudo antes do xref
           writeStream.write(buffer.slice(0, xrefIndex)); // Inserir objetos de assinatura antes do xref
 
-          writeStream.write(Buffer.from('\n' + signatureObjects.acroFormObj + '\n'));
-          writeStream.write(Buffer.from(signatureObjects.signatureObj + '\n'));
-          writeStream.write(Buffer.from(signatureObjects.annotationObj + '\n')); // Continuar com xref modificado
+          writeStream.write(Buffer.from(`\n${signatureObjects.acroFormObj}\n`));
+          writeStream.write(Buffer.from(`${signatureObjects.signatureObj}\n`));
+          writeStream.write(Buffer.from(`${signatureObjects.annotationObj}\n`)); // Continuar com xref modificado
 
           const xrefContent = buffer.slice(xrefIndex);
 
@@ -232,20 +233,15 @@ async function _writePdfWithPlaceholder(inputPath, outputPath, pdfInfo, signatur
 
           writeStream.write(modifiedXref);
           xrefStarted = true;
-          buffer = Buffer.alloc(0);
-        } else {
-          // Escrever o chunk se não encontramos xref ainda
-          if (buffer.length > chunk.length) {
-            writeStream.write(buffer.slice(0, -chunk.length));
-            buffer = buffer.slice(-chunk.length);
-          }
+          buffer = Buffer.alloc(0); // Escrever o chunk se não encontramos xref ainda
+        } else if (buffer.length > chunk.length) {
+          writeStream.write(buffer.slice(0, -chunk.length));
+          buffer = buffer.slice(-chunk.length);
         }
       } else {
         // Após xref, escrever normalmente
         writeStream.write(chunk);
       }
-
-      currentPos += chunk.length;
     });
     readStream.on('end', () => {
       if (!xrefStarted && buffer.length > 0) {
@@ -265,7 +261,7 @@ async function _writePdfWithPlaceholder(inputPath, outputPath, pdfInfo, signatur
  */
 
 
-function _modifyXref(xrefContent, signatureObjects, pdfInfo) {
+function _modifyXref(xrefContent, signatureObjects) {
   let content = xrefContent.toString('latin1'); // Encontrar linha de contagem de objetos
 
   const xrefMatch = content.match(/xref\s+(\d+)\s+(\d+)/);

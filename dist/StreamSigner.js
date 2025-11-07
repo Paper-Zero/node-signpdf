@@ -11,19 +11,11 @@ var _fs = require("fs");
 
 var _crypto = require("crypto");
 
-var _promises = require("stream/promises");
-
 var _SignPdfError = _interopRequireDefault(require("./SignPdfError"));
-
-var _helpers = require("./helpers");
 
 var _const = require("./helpers/const");
 
 var _findByteRangeStream = require("./helpers/findByteRangeStream");
-
-var _streamUtils = require("./helpers/streamUtils");
-
-var _streamAddPlaceholder = _interopRequireDefault(require("./helpers/streamAddPlaceholder"));
 
 function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
 
@@ -50,73 +42,71 @@ class StreamSigner {
       asn1StrictParsing: false,
       passphrase: '',
       outputPath: null,
-      // Se null, sobrescreve o arquivo original
       ...additionalOptions
-    }; // Validações básicas
+    };
+    this.validateInputs(pdfPath, p12Buffer);
+    await this.checkFileExists(pdfPath);
+    const outputPath = options.outputPath || pdfPath;
+    const byteRangeInfo = await (0, _findByteRangeStream.findByteRangeStream)(pdfPath);
+    const byteRange = await this.calculateByteRange(pdfPath, byteRangeInfo);
+    const actualByteRange = this.formatByteRange(byteRange);
+    const {
+      privateKey,
+      certificate
+    } = this.prepareCertificate(p12Buffer, options);
+    const contentHash = await this.calculateContentHash(pdfPath, byteRange, actualByteRange, byteRangeInfo.byteRangePosition);
+    const signature = this.createPKCS7Signature(contentHash, privateKey, certificate);
+    this.validateSignatureSize(signature, byteRangeInfo.placeholderLength);
+    await this.writeSignedPdf(pdfPath, outputPath, byteRange, actualByteRange, byteRangeInfo, signature);
+    return outputPath;
+  }
 
+  validateInputs(pdfPath, p12Buffer) {
     if (typeof pdfPath !== 'string') {
       throw new _SignPdfError.default('PDF path expected as string.', _SignPdfError.default.TYPE_INPUT);
     }
 
     if (!(p12Buffer instanceof Buffer)) {
       throw new _SignPdfError.default('p12 certificate expected as Buffer.', _SignPdfError.default.TYPE_INPUT);
-    } // Verifica se o arquivo existe
+    }
+  }
 
-
+  async checkFileExists(pdfPath) {
     try {
       await _fs.promises.access(pdfPath);
     } catch (error) {
       throw new _SignPdfError.default(`PDF file not found: ${pdfPath}`, _SignPdfError.default.TYPE_INPUT);
     }
+  }
 
-    const outputPath = options.outputPath || pdfPath; // Passo 1: Encontrar ByteRange placeholder no PDF usando stream
-
-    const byteRangeInfo = await (0, _findByteRangeStream.findByteRangeStream)(pdfPath); // Passo 2: Calcular ByteRange correto
-
+  async calculateByteRange(pdfPath, byteRangeInfo) {
     const fileStats = await _fs.promises.stat(pdfPath);
     const placeholderLengthWithBrackets = byteRangeInfo.placeholderEnd + 1 - byteRangeInfo.placeholderStart;
     const byteRange = [0, 0, 0, 0];
     byteRange[1] = byteRangeInfo.placeholderStart;
     byteRange[2] = byteRange[1] + placeholderLengthWithBrackets;
     byteRange[3] = fileStats.size - byteRange[2];
-    let actualByteRange = `/ByteRange [${byteRange.join(' ')}]`;
-    actualByteRange += ' '.repeat(this.byteRangePlaceholder.length - actualByteRange.length); // Passo 3: Preparar certificado
-
-    const {
-      privateKey,
-      certificate
-    } = this._prepareCertificate(p12Buffer, options); // Passo 4: Calcular hash do conteúdo que será assinado
-
-
-    const contentHash = await this._calculateContentHashStream(pdfPath, byteRange, actualByteRange, byteRangeInfo.byteRangePosition); // Passo 5: Criar assinatura PKCS#7
-
-    const signature = this._createPKCS7Signature(contentHash, privateKey, certificate); // Verificar se assinatura cabe no placeholder
-
-
-    if (signature.length * 2 > byteRangeInfo.placeholderLength) {
-      throw new _SignPdfError.default(`Signature exceeds placeholder length: ${signature.length * 2} > ${byteRangeInfo.placeholderLength}`, _SignPdfError.default.TYPE_INPUT);
-    } // Passo 6: Escrever arquivo final com assinatura
-
-
-    await this._writeSignedPdfStream(pdfPath, outputPath, byteRange, actualByteRange, byteRangeInfo, signature);
-    return outputPath;
+    return byteRange;
   }
-  /**
-   * Prepara o certificado P12 para assinatura
-   * @param {Buffer} p12Buffer 
-   * @param {Object} options 
-   * @returns {Object} privateKey e certificate
-   */
 
+  formatByteRange(byteRange) {
+    const actualByteRange = `/ByteRange [${byteRange.join(' ')}]`;
+    const paddingNeeded = this.byteRangePlaceholder.length - actualByteRange.length;
 
-  _prepareCertificate(p12Buffer, options) {
-    // Converter Buffer P12 para implementação forge
+    if (paddingNeeded < 0) {
+      throw new Error(`ByteRange too long: ${actualByteRange.length} > ${this.byteRangePlaceholder.length}`);
+    }
+
+    const padding = ' '.repeat(paddingNeeded);
+    return actualByteRange + padding;
+  }
+
+  prepareCertificate(p12Buffer, options) {
     const forgeCert = _nodeForge.default.util.createBuffer(p12Buffer.toString('binary'));
 
     const p12Asn1 = _nodeForge.default.asn1.fromDer(forgeCert);
 
-    const p12 = _nodeForge.default.pkcs12.pkcs12FromAsn1(p12Asn1, options.asn1StrictParsing, options.passphrase); // Extrair certificados e chave privada
-
+    const p12 = _nodeForge.default.pkcs12.pkcs12FromAsn1(p12Asn1, options.asn1StrictParsing, options.passphrase);
 
     const certBags = p12.getBags({
       bagType: _nodeForge.default.pki.oids.certBag
@@ -126,8 +116,7 @@ class StreamSigner {
       bagType: _nodeForge.default.pki.oids.pkcs8ShroudedKeyBag
     })[_nodeForge.default.pki.oids.pkcs8ShroudedKeyBag];
 
-    const privateKey = keyBags[0].key; // Encontrar o certificado que corresponde à chave privada
-
+    const privateKey = keyBags[0].key;
     let certificate;
     Object.keys(certBags).forEach(i => {
       const {
@@ -145,28 +134,18 @@ class StreamSigner {
 
     return {
       privateKey,
-      certificate,
-      certBags
+      certificate
     };
   }
-  /**
-   * Calcula hash SHA-256 do conteúdo que será assinado usando streams
-   * @param {string} pdfPath 
-   * @param {Array} byteRange 
-   * @param {string} actualByteRange 
-   * @param {number} byteRangePos 
-   * @returns {Promise<Buffer>} Hash do conteúdo
-   */
 
-
-  async _calculateContentHashStream(pdfPath, byteRange, actualByteRange, byteRangePos) {
+  async calculateContentHash(pdfPath, byteRange, actualByteRange, byteRangePos) {
     const hash = (0, _crypto.createHash)('sha256');
     return new Promise((resolve, reject) => {
       const stream = (0, _fs.createReadStream)(pdfPath);
       let currentPos = 0;
       let byteRangeReplaced = false;
       stream.on('data', chunk => {
-        let processedChunk = chunk; // Substituir ByteRange placeholder se ainda não foi feito
+        let processedChunk = chunk;
 
         if (!byteRangeReplaced && currentPos <= byteRangePos && currentPos + chunk.length > byteRangePos) {
           const localPos = byteRangePos - currentPos;
@@ -174,8 +153,7 @@ class StreamSigner {
           const replacementBuffer = Buffer.from(actualByteRange);
           processedChunk = Buffer.concat([chunk.slice(0, localPos), replacementBuffer, chunk.slice(localPos + placeholderLength)]);
           byteRangeReplaced = true;
-        } // Adicionar ao hash apenas as partes que devem ser assinadas (ByteRange)
-
+        }
 
         const chunkStart = currentPos;
         const chunkEnd = currentPos + processedChunk.length; // Primeira parte: do início até o placeholder da assinatura
@@ -201,24 +179,12 @@ class StreamSigner {
       stream.on('error', reject);
     });
   }
-  /**
-   * Cria assinatura PKCS#7 para o hash do conteúdo
-   * @param {Buffer} contentHash 
-   * @param {Object} privateKey 
-   * @param {Object} certificate 
-   * @returns {Buffer} Assinatura em formato raw
-   */
 
+  createPKCS7Signature(contentHash, privateKey, certificate) {
+    const p7 = _nodeForge.default.pkcs7.createSignedData();
 
-  _createPKCS7Signature(contentHash, privateKey, certificate) {
-    // Criar estrutura PKCS#7
-    const p7 = _nodeForge.default.pkcs7.createSignedData(); // Definir conteúdo como hash (detached signature)
-
-
-    p7.content = _nodeForge.default.util.createBuffer(contentHash); // Adicionar certificado
-
-    p7.addCertificate(certificate); // Adicionar assinante com SHA-256
-
+    p7.content = _nodeForge.default.util.createBuffer(contentHash);
+    p7.addCertificate(certificate);
     p7.addSigner({
       key: privateKey,
       certificate,
@@ -230,11 +196,9 @@ class StreamSigner {
         type: _nodeForge.default.pki.oids.signingTime,
         value: new Date()
       }, {
-        type: _nodeForge.default.pki.oids.messageDigest // valor será preenchido automaticamente
-
+        type: _nodeForge.default.pki.oids.messageDigest
       }]
-    }); // Assinar em modo detached
-
+    });
     p7.sign({
       detached: true
     });
@@ -243,30 +207,23 @@ class StreamSigner {
 
     return Buffer.from(raw, 'binary');
   }
-  /**
-   * Escreve o PDF final com a assinatura inserida usando streams
-   * @param {string} inputPath 
-   * @param {string} outputPath 
-   * @param {Array} byteRange 
-   * @param {string} actualByteRange 
-   * @param {Object} byteRangeInfo 
-   * @param {Buffer} signature 
-   */
 
+  validateSignatureSize(signature, placeholderLength) {
+    if (signature.length * 2 > placeholderLength) {
+      throw new _SignPdfError.default(`Signature exceeds placeholder length: ${signature.length * 2} > ${placeholderLength}`, _SignPdfError.default.TYPE_INPUT);
+    }
+  }
 
-  async _writeSignedPdfStream(inputPath, outputPath, byteRange, actualByteRange, byteRangeInfo, signature) {
-    // Converter assinatura para hex e preencher com zeros
+  async writeSignedPdf(inputPath, outputPath, byteRange, actualByteRange, byteRangeInfo, signature) {
     let hexSignature = signature.toString('hex');
-    this.lastSignature = hexSignature; // Preencher com zeros até o tamanho do placeholder
-
+    this.lastSignature = hexSignature;
     const paddingLength = byteRangeInfo.placeholderLength / 2 - signature.length;
 
     if (paddingLength > 0) {
       hexSignature += '0'.repeat(paddingLength * 2);
     }
 
-    const signatureWithBrackets = `<${hexSignature}>`; // Usar arquivo temporário se output é o mesmo que input
-
+    const signatureWithBrackets = `<${hexSignature}>`;
     const tempPath = outputPath === inputPath ? `${outputPath}.tmp` : outputPath;
     const readStream = (0, _fs.createReadStream)(inputPath);
     const writeStream = (0, _fs.createWriteStream)(tempPath);
@@ -277,7 +234,7 @@ class StreamSigner {
       readStream.on('data', chunk => {
         let processedChunk = chunk;
         const chunkStart = currentPos;
-        const chunkEnd = currentPos + chunk.length; // Substituir ByteRange placeholder
+        const chunkEnd = currentPos + chunk.length;
 
         if (!byteRangeReplaced && chunkStart <= byteRangeInfo.byteRangePosition && chunkEnd > byteRangeInfo.byteRangePosition) {
           const localPos = byteRangeInfo.byteRangePosition - chunkStart;
@@ -285,19 +242,16 @@ class StreamSigner {
           const replacementBuffer = Buffer.from(actualByteRange);
           processedChunk = Buffer.concat([chunk.slice(0, localPos), replacementBuffer, chunk.slice(localPos + placeholderLength)]);
           byteRangeReplaced = true;
-        } // Inserir assinatura no lugar do placeholder
-
+        }
 
         if (!signatureInserted && chunkStart <= byteRange[1] && chunkEnd > byteRange[1]) {
-          const localPos = byteRange[1] - chunkStart; // Escrever até o placeholder
+          const localPos = byteRange[1] - chunkStart;
 
           if (localPos > 0) {
             writeStream.write(processedChunk.slice(0, localPos));
-          } // Escrever assinatura
+          }
 
-
-          writeStream.write(Buffer.from(signatureWithBrackets)); // Pular o placeholder e continuar após ele
-
+          writeStream.write(Buffer.from(signatureWithBrackets));
           const skipLength = byteRange[2] - byteRange[1];
           const remainingInChunk = processedChunk.length - localPos;
 
@@ -307,18 +261,14 @@ class StreamSigner {
 
           signatureInserted = true;
         } else if (signatureInserted || chunkEnd <= byteRange[1] || chunkStart >= byteRange[2]) {
-          // Escrever chunk normal (fora da área do placeholder)
           writeStream.write(processedChunk);
-        } // Se estamos dentro da área do placeholder, pular (não escrever)
-
+        }
 
         currentPos += chunk.length;
       });
       readStream.on('end', async () => {
-        writeStream.end(); // Aguardar finalização da escrita
-
+        writeStream.end();
         writeStream.on('finish', async () => {
-          // Se usamos arquivo temporário, renomear
           if (tempPath !== outputPath) {
             try {
               await _fs.promises.rename(tempPath, outputPath);

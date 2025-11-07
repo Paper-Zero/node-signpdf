@@ -17,7 +17,8 @@ function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { de
  * Encontra informações do ByteRange em um PDF usando streams
  * Versão otimizada que não carrega o arquivo inteiro na memória
  * @param {string} pdfPath - Caminho do arquivo PDF
- * @returns {Promise<Object>} {byteRangePlaceholder, byteRangePosition, contentsPosition, placeholderPosition}
+ * @returns {Promise<Object>}
+ * {byteRangePlaceholder, byteRangePosition, contentsPosition, placeholderPosition}
  */
 const findByteRangeStream = async pdfPath => {
   if (typeof pdfPath !== 'string') {
@@ -29,7 +30,7 @@ const findByteRangeStream = async pdfPath => {
     let buffer = Buffer.alloc(0);
     let currentPosition = 0;
     let found = false;
-    const placeholderPattern = Buffer.from(`/${_const.DEFAULT_BYTE_RANGE_PLACEHOLDER}`);
+    const placeholderPattern = Buffer.from(`/ByteRange [${_const.DEFAULT_BYTE_RANGE_PLACEHOLDER}]`);
     const contentsPattern = Buffer.from('/Contents ');
     const openBracketPattern = Buffer.from('<');
     const closeBracketPattern = Buffer.from('>');
@@ -61,8 +62,8 @@ const findByteRangeStream = async pdfPath => {
               contentsPosition: absoluteContentsPos,
               placeholderStart: absoluteOpenPos,
               placeholderEnd: absoluteClosePos,
-              placeholderLength: absoluteClosePos - absoluteOpenPos - 1 // -1 para excluir os brackets
-
+              // -1 para excluir os brackets
+              placeholderLength: absoluteClosePos - absoluteOpenPos - 1
             });
             return;
           }
@@ -97,45 +98,42 @@ const findByteRangeStream = async pdfPath => {
 
 exports.findByteRangeStream = findByteRangeStream;
 
-const findByteRangeStringsStream = async pdfPath => {
-  return new Promise((resolve, reject) => {
-    const stream = (0, _fs.createReadStream)(pdfPath);
-    let content = '';
-    let position = 0;
-    stream.on('data', chunk => {
-      content += chunk.toString('latin1'); // Limitar o tamanho do conteúdo acumulado para evitar estouro de memória
-      // Manter apenas o suficiente para busca de padrões
+const findByteRangeStringsStream = async pdfPath => new Promise((resolve, reject) => {
+  const stream = (0, _fs.createReadStream)(pdfPath);
+  let content = '';
+  stream.on('data', chunk => {
+    content += chunk.toString('latin1'); // Limitar o tamanho do conteúdo acumulado para evitar estouro de memória
+    // Manter apenas o suficiente para busca de padrões
 
-      if (content.length > 10240) {
-        // 10KB
-        const keepSize = 5120; // manter últimos 5KB
+    if (content.length > 10240) {
+      // 10KB
+      const keepSize = 5120; // manter últimos 5KB
 
-        content = content.slice(-keepSize);
-      }
-    });
-    stream.on('end', () => {
-      try {
-        const byteRangeStrings = content.match(/\/ByteRange\s*\[{1}\s*(?:(?:\d*|\/\*{10})\s+){3}(?:\d+|\/\*{10}){1}\s*]{1}/g);
-
-        if (!byteRangeStrings) {
-          reject(new _SignPdfError.default('No ByteRangeStrings found within PDF', _SignPdfError.default.TYPE_PARSE));
-          return;
-        }
-
-        const byteRangePlaceholder = byteRangeStrings.find(s => s.includes(`/${_const.DEFAULT_BYTE_RANGE_PLACEHOLDER}`));
-        const byteRanges = byteRangeStrings.map(brs => brs.match(/[^[\s]*(?:\d|\/\*{10})/g));
-        resolve({
-          byteRangeStrings,
-          byteRangePlaceholder,
-          byteRanges
-        });
-      } catch (error) {
-        reject(error);
-      }
-    });
-    stream.on('error', reject);
+      content = content.slice(-keepSize);
+    }
   });
-};
+  stream.on('end', () => {
+    try {
+      const byteRangeStrings = content.match(/\/ByteRange\s*\[{1}\s*(?:(?:\d*|\/\*{10})\s+){3}(?:\d+|\/\*{10}){1}\s*]{1}/g);
+
+      if (!byteRangeStrings) {
+        reject(new _SignPdfError.default('No ByteRangeStrings found within PDF', _SignPdfError.default.TYPE_PARSE));
+        return;
+      }
+
+      const byteRangePlaceholder = byteRangeStrings.find(s => s.includes(`/${_const.DEFAULT_BYTE_RANGE_PLACEHOLDER}`));
+      const byteRanges = byteRangeStrings.map(brs => brs.match(/[^[\s]*(?:\d|\/\*{10})/g));
+      resolve({
+        byteRangeStrings,
+        byteRangePlaceholder,
+        byteRanges
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
+  stream.on('error', reject);
+});
 /**
  * Wrapper que mantém compatibilidade com a API original
  * Usa streams internamente mas aceita Buffer para compatibilidade
@@ -163,12 +161,14 @@ const findByteRange = pdf => {
       byteRangePlaceholder,
       byteRanges
     };
-  } else if (typeof pdf === 'string') {
+  }
+
+  if (typeof pdf === 'string') {
     // Modo streaming: usar nova implementação
     return findByteRangeStringsStream(pdf);
-  } else {
-    throw new _SignPdfError.default('PDF expected as Buffer or file path string.', _SignPdfError.default.TYPE_INPUT);
   }
+
+  throw new _SignPdfError.default('PDF expected as Buffer or file path string.', _SignPdfError.default.TYPE_INPUT);
 };
 
 var _default = findByteRange;
