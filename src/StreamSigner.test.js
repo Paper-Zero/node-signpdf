@@ -213,5 +213,3 @@ startxref
 
     return Buffer.from(pdf);
 }
-
-
