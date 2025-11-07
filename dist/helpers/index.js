@@ -33,6 +33,12 @@ Object.defineProperty(exports, "removeTrailingNewLine", {
     return _removeTrailingNewLine.default;
   }
 });
+Object.defineProperty(exports, "streamAddPlaceholder", {
+  enumerable: true,
+  get: function () {
+    return _streamAddPlaceholder.default;
+  }
+});
 
 var _extractSignature = _interopRequireDefault(require("./extractSignature"));
 
@@ -43,6 +49,8 @@ var _plainAddPlaceholder = _interopRequireDefault(require("./plainAddPlaceholder
 var _removeTrailingNewLine = _interopRequireDefault(require("./removeTrailingNewLine"));
 
 var _findByteRange = _interopRequireDefault(require("./findByteRange"));
+
+var _streamAddPlaceholder = _interopRequireDefault(require("./streamAddPlaceholder"));
 
 function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
 

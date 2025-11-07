@@ -9,7 +9,6 @@ export * from './helpers/const';
 
 // Export StreamSigner for large PDF support
 export {StreamSigner} from './StreamSigner';
-export {default as streamAddPlaceholder} from './helpers/streamAddPlaceholder';
 
 export class SignPdf {
     constructor() {
