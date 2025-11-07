@@ -5,8 +5,11 @@ import {DEFAULT_BYTE_RANGE_PLACEHOLDER} from './helpers/const';
 
 export {default as SignPdfError} from './SignPdfError';
 export * from './helpers';
-
 export * from './helpers/const';
+
+// Export StreamSigner for large PDF support
+export {StreamSigner} from './StreamSigner';
+export {default as streamAddPlaceholder} from './helpers/streamAddPlaceholder';
 
 export class SignPdf {
     constructor() {

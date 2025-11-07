@@ -5,7 +5,9 @@ Object.defineProperty(exports, "__esModule", {
 });
 var _exportNames = {
   SignPdf: true,
-  SignPdfError: true
+  SignPdfError: true,
+  StreamSigner: true,
+  streamAddPlaceholder: true
 };
 exports.SignPdf = void 0;
 Object.defineProperty(exports, "SignPdfError", {
@@ -14,7 +16,19 @@ Object.defineProperty(exports, "SignPdfError", {
     return _SignPdfError.default;
   }
 });
+Object.defineProperty(exports, "StreamSigner", {
+  enumerable: true,
+  get: function () {
+    return _StreamSigner.StreamSigner;
+  }
+});
 exports.default = void 0;
+Object.defineProperty(exports, "streamAddPlaceholder", {
+  enumerable: true,
+  get: function () {
+    return _streamAddPlaceholder.default;
+  }
+});
 
 var _nodeForge = _interopRequireDefault(require("node-forge"));
 
@@ -48,8 +62,13 @@ Object.keys(_const).forEach(function (key) {
   });
 });
 
+var _StreamSigner = require("./StreamSigner");
+
+var _streamAddPlaceholder = _interopRequireDefault(require("./helpers/streamAddPlaceholder"));
+
 function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
 
+// Export StreamSigner for large PDF support
 class SignPdf {
   constructor() {
     this.byteRangePlaceholder = _const.DEFAULT_BYTE_RANGE_PLACEHOLDER;
