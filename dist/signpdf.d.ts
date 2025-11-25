@@ -1,6 +1,7 @@
 export { default as SignPdfError } from "./SignPdfError";
 export * from "./helpers";
 export * from "./helpers/const";
+export { StreamSigner } from "./StreamSigner";
 export class SignPdf {
     byteRangePlaceholder: string;
     lastSignature: string;

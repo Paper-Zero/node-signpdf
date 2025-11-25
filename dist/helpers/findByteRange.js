@@ -20,16 +20,20 @@ function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { de
 const findByteRange = pdf => {
   if (!(pdf instanceof Buffer)) {
     throw new _SignPdfError.default('PDF expected as Buffer.', _SignPdfError.default.TYPE_INPUT);
-  }
+  } // Criar regex dinâmico baseado no tamanho real do placeholder
 
-  const byteRangeStrings = pdf.toString().match(/\/ByteRange\s*\[{1}\s*(?:(?:\d*|\/\*{10})\s+){3}(?:\d+|\/\*{10}){1}\s*]{1}/g);
+
+  const placeholderLength = _const.DEFAULT_BYTE_RANGE_PLACEHOLDER.length;
+  const byteRangeRegex = new RegExp(`\\/ByteRange\\s*\\[{1}\\s*(?:(?:\\d*|\\/\\*{${placeholderLength}})\\s+){3}(?:\\d+|\\/\\*{${placeholderLength}}){1}\\s*]{1}`, 'g');
+  const byteRangeStrings = pdf.toString().match(byteRangeRegex);
 
   if (!byteRangeStrings) {
     throw new _SignPdfError.default('No ByteRangeStrings found within PDF buffer', _SignPdfError.default.TYPE_PARSE);
   }
 
   const byteRangePlaceholder = byteRangeStrings.find(s => s.includes(`/${_const.DEFAULT_BYTE_RANGE_PLACEHOLDER}`));
-  const byteRanges = byteRangeStrings.map(brs => brs.match(/[^[\s]*(?:\d|\/\*{10})/g));
+  const byteRangeRegexForParsing = new RegExp(`[^[\\s]*(?:\\d|\\/\\*{${placeholderLength}})`, 'g');
+  const byteRanges = byteRangeStrings.map(brs => brs.match(byteRangeRegexForParsing));
   return {
     byteRangePlaceholder,
     byteRangeStrings,

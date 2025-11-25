@@ -7,5 +7,6 @@ Array [
   "pdfkitAddPlaceholder",
   "plainAddPlaceholder",
   "removeTrailingNewLine",
+  "streamAddPlaceholder",
 ]
 `;

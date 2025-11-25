@@ -1,11 +1,7 @@
 {
-    "name": "node-signpdf",
-    "version": "2.0.0",
+    "name": "@paper-zero/node-signpdf",
+    "version": "2.0.3",
     "description": "Simple signing of PDFs in node.",
-    "repository": {
-        "type": "git",
-        "url": "https://github.com/vbuch/node-signpdf"
-    },
     "license": "MIT",
     "keywords": [
         "sign",
@@ -38,7 +34,8 @@
         "build": "rm -rf ./dist/* & ./node_modules/.bin/babel ./src -d ./dist --ignore \"**/*.test.js\" & tsc",
         "build:watch": "./node_modules/.bin/babel --watch ./src -d ./dist --ignore \"**/*.test.js\"",
         "lint": "./node_modules/.bin/eslint -c .eslintrc --ignore-path .eslintignore ./",
-        "prepare": "husky install"
+        "prepare": "husky install",
+        "push-no-verify": "git push --no-verify"
     },
     "peerDependencies": {
         "node-forge": "^1.2.1"

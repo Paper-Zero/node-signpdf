@@ -5,13 +5,20 @@ Object.defineProperty(exports, "__esModule", {
 });
 var _exportNames = {
   SignPdf: true,
-  SignPdfError: true
+  SignPdfError: true,
+  StreamSigner: true
 };
 exports.SignPdf = void 0;
 Object.defineProperty(exports, "SignPdfError", {
   enumerable: true,
   get: function () {
     return _SignPdfError.default;
+  }
+});
+Object.defineProperty(exports, "StreamSigner", {
+  enumerable: true,
+  get: function () {
+    return _StreamSigner.StreamSigner;
   }
 });
 exports.default = void 0;
@@ -48,8 +55,11 @@ Object.keys(_const).forEach(function (key) {
   });
 });
 
+var _StreamSigner = require("./StreamSigner");
+
 function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
 
+// Export StreamSigner for large PDF support
 class SignPdf {
   constructor() {
     this.byteRangePlaceholder = _const.DEFAULT_BYTE_RANGE_PLACEHOLDER;

@@ -1,0 +1,901 @@
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const { PDFDocument, rgb, StandardFonts } = require('pdf-lib');
+const forge = require('node-forge');
+const { v4: uuidv4 } = require('uuid');
+const log = require('electron-log');
+const { version } = require('../package.json');
+// Nova biblioteca que suporta streaming para arquivos grandes
+const { plainAddPlaceholder, SignPdf, StreamSigner } = require('@paper-zero/node-signpdf');
+const https = require('https');
+const http = require('http');
+const os = require('os');
+
+class PDFProcessor {
+    constructor(certificatePath, password) {
+        this.certificatePath = certificatePath;
+        this.password = password;
+        this.certificate = null;
+        this.certificateChain = null;
+        this.privateKey = null;
+        
+        // URL do TSA (Time Stamping Authority) gratuito
+        // Você pode usar um serviço público ou configurar seu próprio
+        this.tsaUrl = 'http://timestamp.digicert.com'; // DigiCert (gratuito)
+        // Alternativas:
+        // 'http://timestamp.globalsign.com/tsa/r6advanced1' (GlobalSign)
+        // 'http://time.certum.pl' (Certum)
+        // 'http://ts.ssl.com' (SSL.com)
+        
+        this.loadCertificate();
+    }
+
+    /**
+     * Ordena certificados na cadeia correta: usuário -> intermediários -> raiz
+     * O Adobe precisa que os certificados estejam em ordem sequencial
+     */
+    orderCertificateChain(certificates) {
+        if (certificates.length <= 1) {
+            return certificates;
+        }
+
+        log.info('Ordenando cadeia de certificados...');
+        
+        // Encontrar certificado do usuário (aquele que tem chave privada - o primeiro com subject diferente do issuer, ou que não é CA)
+        const userCert = certificates.find(cert => {
+            // Certificado de usuário geralmente tem subject != issuer (não é auto-assinado)
+            const subjectCn = cert.subject.getField('CN')?.value || '';
+            const issuerCn = cert.issuer.getField('CN')?.value || '';
+            
+            // Se tem basicConstraints com CA=false, é certificado de usuário
+            const basicConstraints = cert.getExtension('basicConstraints');
+            if (basicConstraints && basicConstraints.cA === false) {
+                return true;
+            }
+            
+            // Ou se o subject é diferente do issuer e não contém "AC " ou "Autoridade"
+            if (subjectCn !== issuerCn && 
+                !subjectCn.includes('AC ') && 
+                !subjectCn.includes('Autoridade Certificadora')) {
+                return true;
+            }
+            
+            return false;
+        }) || certificates[0]; // Fallback para o primeiro se não identificar
+        
+        log.info(`Certificado do usuário identificado: ${userCert.subject.getField('CN')?.value}`);
+        
+        // Construir cadeia seguindo o emissor de cada certificado
+        const orderedChain = [userCert];
+        const remainingCerts = certificates.filter(c => c !== userCert);
+        
+        let currentCert = userCert;
+        let maxIterations = certificates.length; // Prevenir loop infinito
+        let iterations = 0;
+        
+        while (remainingCerts.length > 0 && iterations < maxIterations) {
+            iterations++;
+            
+            const issuerCn = currentCert.issuer.getField('CN')?.value;
+            
+            // Procurar o próximo certificado na cadeia (aquele cujo subject = issuer do atual)
+            const nextCertIndex = remainingCerts.findIndex(cert => {
+                const subjectCn = cert.subject.getField('CN')?.value;
+                return subjectCn === issuerCn;
+            });
+            
+            if (nextCertIndex !== -1) {
+                const nextCert = remainingCerts[nextCertIndex];
+                orderedChain.push(nextCert);
+                remainingCerts.splice(nextCertIndex, 1);
+                currentCert = nextCert;
+                
+                log.info(`  Adicionado à cadeia: ${nextCert.subject.getField('CN')?.value}`);
+                
+                // Se chegou no certificado raiz (auto-assinado), parar
+                const subjectCn = nextCert.subject.getField('CN')?.value;
+                const nextIssuerCn = nextCert.issuer.getField('CN')?.value;
+                if (subjectCn === nextIssuerCn) {
+                    log.info('  Certificado raiz encontrado (auto-assinado)');
+                    break;
+                }
+            } else {
+                // Não encontrou próximo na sequência, adicionar certificados restantes
+                log.warn(`  Não foi possível encontrar emissor: ${issuerCn}`);
+                log.warn('  Adicionando certificados restantes na ordem original...');
+                orderedChain.push(...remainingCerts);
+                break;
+            }
+        }
+        
+        log.info('✅ Cadeia ordenada com sucesso');
+        return orderedChain;
+    }
+
+    loadCertificate() {
+        try {
+            let p12Data;
+            
+            // Verificar se é dados binários (Buffer) ou caminho de arquivo
+            if (Buffer.isBuffer(this.certificatePath)) {
+                log.info('Carregando certificado a partir de dados embedados');
+                p12Data = this.certificatePath;
+            } else {
+                log.info(`Tentando carregar certificado: ${this.certificatePath}`);
+                
+                // Verificar se o arquivo existe
+                if (!fs.existsSync(this.certificatePath)) {
+                    throw new Error(`Arquivo de certificado não encontrado: ${this.certificatePath}`);
+                }
+                
+                // Verificar tamanho do arquivo
+                const stats = fs.statSync(this.certificatePath);
+                if (stats.size === 0) {
+                    throw new Error('Arquivo de certificado está vazio');
+                }
+                
+                // Ler o arquivo do certificado
+                p12Data = fs.readFileSync(this.certificatePath);
+                log.info(`Certificado carregado, tamanho: ${p12Data.length} bytes`);
+            }
+            
+            // Converter para binary string (necessário no Windows)
+            const binaryString = p12Data.toString('binary');
+            log.info(`Conversão para binary string: ${binaryString.length} caracteres`);
+            
+            const p12Asn1 = forge.asn1.fromDer(binaryString);
+            log.info('ASN.1 parsado com sucesso');
+            
+            const p12 = forge.pkcs12.pkcs12FromAsn1(p12Asn1, this.password);
+            log.info('PKCS#12 decodificado com sucesso');
+
+            // Extrair certificado e chave privada
+            const bags = p12.getBags({ bagType: forge.pki.oids.certBag });
+            if (!bags[forge.pki.oids.certBag] || bags[forge.pki.oids.certBag].length === 0) {
+                throw new Error('Nenhum certificado encontrado no arquivo PKCS#12');
+            }
+            
+            // IMPORTANTE: Extrair TODOS os certificados (incluindo intermediários)
+            const allCerts = bags[forge.pki.oids.certBag].map(bag => bag.cert);
+            
+            // Ordenar certificados na sequência correta (usuário -> intermediários -> raiz)
+            this.certificateChain = this.orderCertificateChain(allCerts);
+            this.certificate = this.certificateChain[0]; // Certificado principal (do usuário)
+            
+            log.info(`Certificados extraídos: ${this.certificateChain.length} na cadeia`);
+            this.certificateChain.forEach((cert, idx) => {
+                const cn = cert.subject.getField('CN')?.value || 'N/A';
+                const issuerCn = cert.issuer.getField('CN')?.value || 'N/A';
+                log.info(`  [${idx}] CN: ${cn} | Emissor: ${issuerCn}`);
+            });
+
+            const keyBags = p12.getBags({ bagType: forge.pki.oids.pkcs8ShroudedKeyBag });
+            if (!keyBags[forge.pki.oids.pkcs8ShroudedKeyBag] || keyBags[forge.pki.oids.pkcs8ShroudedKeyBag].length === 0) {
+                throw new Error('Nenhuma chave privada encontrada no arquivo PKCS#12');
+            }
+            this.privateKey = keyBags[forge.pki.oids.pkcs8ShroudedKeyBag][0].key;
+            log.info('Chave privada extraída com sucesso');
+
+            log.info('Certificado carregado com sucesso');
+            log.info('Proprietário:', this.certificate.subject.getField('CN').value);
+            log.info('Emissor:', this.certificate.issuer.getField('CN').value);
+            log.info('Válido até:', this.certificate.validity.notAfter);
+
+            // Verificar se o certificado não está expirado
+            const now = new Date();
+            if (now > this.certificate.validity.notAfter) {
+                log.warn('ATENÇÃO: Certificado expirado!');
+            }
+            if (now < this.certificate.validity.notBefore) {
+                log.warn('ATENÇÃO: Certificado ainda não é válido!');
+            }
+
+        } catch (error) {
+            log.error('Erro ao carregar certificado:', error.message);
+            log.error('Stack trace:', error.stack);
+            throw new Error(`Erro ao carregar certificado: ${error.message}. Verifique o arquivo e a senha.`);
+        }
+    }
+
+    formatCnpj(cnpj) {
+        if (!cnpj) return cnpj;
+
+        return cnpj.replace(
+            /(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/,
+            '$1.$2.$3/$4-$5',
+        );
+    }
+
+    async signPDF(inputPath, outputPath) {
+        try {
+            log.info(`Iniciando assinatura do PDF: ${path.basename(inputPath)}`);
+            
+            // Verificar se o arquivo de entrada existe
+            if (!fs.existsSync(inputPath)) {
+                throw new Error(`Arquivo PDF não encontrado: ${inputPath}`);
+            }
+            
+            // Log do tamanho do arquivo para monitoramento
+            const fileStats = fs.statSync(inputPath);
+            const fileSizeMB = fileStats.size / (1024 * 1024);
+            log.info(`Tamanho do arquivo: ${fileSizeMB.toFixed(2)} MB`);
+            
+            // REMOVIDA validação de 500MB - nova biblioteca suporta arquivos grandes via streaming
+            // A biblioteca @paper-zero/node-signpdf usa streaming para evitar limitações de memória;
+            
+            // Verificar se o certificado foi carregado
+            if (!this.certificate || !this.privateKey) {
+                throw new Error('Certificado não foi carregado corretamente');
+            }
+
+            // Ler o PDF original
+            log.info('Lendo arquivo PDF original...');
+            const existingPdfBytes = fs.readFileSync(inputPath);
+            log.info(`PDF lido: ${existingPdfBytes.length} bytes`);
+            
+            // Calcular hash SHA256 do documento ORIGINAL (antes da assinatura)
+            const originalDocHash = crypto.createHash('sha256').update(existingPdfBytes).digest('hex');
+            log.info(`Hash SHA256 do documento original: ${originalDocHash}`);
+            
+            log.info('Carregando PDF com pdf-lib...');
+            const pdfDoc = await PDFDocument.load(existingPdfBytes);
+            log.info('PDF carregado com sucesso');
+
+            // Gerar hash único para a assinatura
+            const signatureHash = uuidv4();
+            log.info(`Hash da assinatura gerado: ${signatureHash}`);
+            
+            // Obter informações do certificado
+            const signerNameWithCnpj = this.certificate.subject.getField('CN').value;
+            console.log('🤖 [LOG-DEV] ~ PDFProcessor ~ signPDF ~ signerNameWithCnpj:', signerNameWithCnpj)
+
+            // Procura o CNPJ /d[14]
+            const cnpjMatch = signerNameWithCnpj.match(/\d{14}/);
+            console.log('🤖 [LOG-DEV] ~ PDFProcessor ~ signPDF ~ cnpjMatch:', cnpjMatch)
+            const cnpj = cnpjMatch ? this.formatCnpj(cnpjMatch[0]) : '';
+            const signerName = cnpj ? signerNameWithCnpj.replace(/\d{14}/, ` ${cnpj}`) : signerNameWithCnpj;
+
+            const signatureDate = new Date();
+            log.info(`Assinando como: ${signerName} em ${signatureDate}`);
+
+            // Adicionar texto de assinatura em cada página
+            log.info('Adicionando texto de assinatura às páginas...');
+            const pages = pdfDoc.getPages();
+            const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+            log.info(`Total de páginas: ${pages.length}`);
+            
+            for (let i = 0; i < pages.length; i++) {
+                const page = pages[i];
+                const { width, height } = page.getSize();
+                log.info(`Processando página ${i + 1}: ${width}x${height}`);
+                
+                // Texto da assinatura no rodapé
+                const signatureText = `PaperZero ${signatureHash}. Documento assinado eletronicamente, conforme MP 2.200-2/2001 e Lei 14.063/2020.`;
+                page.drawText(signatureText, {
+                    x: 50,
+                    y: 30, // Rodapé
+                    size: 7,
+                    font: font,
+                    color: rgb(0.6, 0.6, 0.6), // Cinza mais claro
+                    maxWidth: width - 100,
+                });
+            }
+            log.info('Texto de assinatura adicionado a todas as páginas');
+
+            // Adicionar metadados de assinatura
+            log.info('Adicionando metadados...');
+            pdfDoc.setTitle(`${pdfDoc.getTitle() || 'Documento'} - Assinado Digitalmente`);
+            pdfDoc.setSubject('Documento assinado digitalmente com certificado ICP-Brasil');
+            pdfDoc.setKeywords(['assinatura digital', 'ICP-Brasil', 'PAdES']);
+            pdfDoc.setProducer(`PzDeskSign v${version}`);
+            pdfDoc.setCreator('PaperZero Digital Signature');
+            log.info('Metadados adicionados');
+
+            // Adicionar página de relatório de assinatura
+            log.info('Adicionando página de relatório...');
+            await this.addSignatureReportPage(pdfDoc, signatureHash, signerName, signatureDate, inputPath, originalDocHash);
+            log.info('Página de relatório adicionada');
+
+            // Salvar PDF preparado (sem object streams para compatibilidade com node-signpdf)
+            log.info('Salvando PDF preparado...');
+            const pdfBytes = await pdfDoc.save({
+                useObjectStreams: false,
+                addDefaultPage: false
+            });
+            log.info(`PDF preparado: ${pdfBytes.length} bytes`);
+            
+            // Adicionar assinatura digital PKCS#7 ao PDF
+            log.info('Adicionando assinatura digital PAdES...');
+            const signedPdfBytes = await this.addDigitalSignatureToPdf(Buffer.from(pdfBytes), signerName);
+            log.info(`PDF assinado: ${signedPdfBytes.length} bytes`);
+            
+            // Garantir que o diretório de saída existe
+            const outputDir = path.dirname(outputPath);
+            if (!fs.existsSync(outputDir)) {
+                fs.mkdirSync(outputDir, { recursive: true });
+                log.info(`Diretório criado: ${outputDir}`);
+            }
+            
+            fs.writeFileSync(outputPath, signedPdfBytes);
+            log.info(`PDF salvo em: ${outputPath}`);
+
+            log.info(`PDF assinado com sucesso: ${path.basename(outputPath)}`);
+            
+            return {
+                success: true,
+                signatureHash,
+                signerName,
+                signatureDate,
+                outputPath
+            };
+
+        } catch (error) {
+            log.error(`Erro ao assinar PDF ${path.basename(inputPath)}:`, error.message);
+            log.error('Stack trace:', error.stack);
+            throw new Error(`Erro ao assinar PDF: ${error.message}`);
+        }
+    }
+
+    /**
+     * Obter timestamp de uma autoridade de carimbo de tempo (TSA)
+     * Isso adiciona um carimbo de tempo confiável à assinatura
+     */
+    async getTimestamp(messageHash) {
+        try {
+            log.info('Solicitando timestamp do TSA...');
+            
+            // Criar requisição de timestamp RFC 3161
+            const tsReq = forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.SEQUENCE, true, [
+                // version
+                forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.INTEGER, false,
+                    forge.asn1.integerToDer(1).getBytes()),
+                // messageImprint
+                forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.SEQUENCE, true, [
+                    // hashAlgorithm
+                    forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.SEQUENCE, true, [
+                        forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.OID, false,
+                            forge.asn1.oidToDer('2.16.840.1.101.3.4.2.1').getBytes()) // SHA-256
+                    ]),
+                    // hashedMessage
+                    forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.OCTETSTRING, false, messageHash)
+                ]),
+                // certReq (opcional, true para incluir certificado do TSA na resposta)
+                forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.BOOLEAN, false,
+                    String.fromCharCode(0xFF))
+            ]);
+            
+            const der = forge.asn1.toDer(tsReq).getBytes();
+            const derBuffer = Buffer.from(der, 'binary');
+            
+            log.info(`Requisição TSA criada: ${derBuffer.length} bytes`);
+            
+            // Fazer requisição HTTP ao TSA
+            const timestamp = await this.requestTimestamp(derBuffer);
+            
+            log.info('✅ Timestamp obtido com sucesso do TSA');
+            return timestamp;
+            
+        } catch (error) {
+            log.warn('Não foi possível obter timestamp do TSA:', error.message);
+            log.warn('A assinatura será criada sem timestamp (apenas com horário local)');
+            return null; // Continuar sem timestamp se falhar
+        }
+    }
+
+    /**
+     * Fazer requisição HTTP ao servidor TSA
+     */
+    requestTimestamp(requestData) {
+        return new Promise((resolve, reject) => {
+            const url = new URL(this.tsaUrl);
+            const protocol = url.protocol === 'https:' ? https : http;
+            
+            const options = {
+                hostname: url.hostname,
+                port: url.port || (url.protocol === 'https:' ? 443 : 80),
+                path: url.pathname,
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/timestamp-query',
+                    'Content-Length': requestData.length,
+                    'User-Agent': 'PzDeskSign/' + version
+                },
+                timeout: 10000 // 10 segundos
+            };
+            
+            log.info(`Enviando requisição para TSA: ${this.tsaUrl}`);
+            
+            const req = protocol.request(options, (res) => {
+                const chunks = [];
+                
+                res.on('data', (chunk) => {
+                    chunks.push(chunk);
+                });
+                
+                res.on('end', () => {
+                    if (res.statusCode === 200) {
+                        const response = Buffer.concat(chunks);
+                        log.info(`Resposta do TSA recebida: ${response.length} bytes`);
+                        resolve(response);
+                    } else {
+                        reject(new Error(`TSA retornou status ${res.statusCode}`));
+                    }
+                });
+            });
+            
+            req.on('error', (error) => {
+                reject(error);
+            });
+            
+            req.on('timeout', () => {
+                req.destroy();
+                reject(new Error('Timeout ao conectar com TSA'));
+            });
+            
+            req.write(requestData);
+            req.end();
+        });
+    }
+
+    async addDigitalSignatureToPdf(pdfBuffer, signerName) {
+        try {
+            // Definir limite: 400MB (deixar margem antes do limite do V8 de ~536MB)
+            const LARGE_FILE_THRESHOLD = 400 * 1024 * 1024; // 400 MB
+            const isLargeFile = pdfBuffer.length > LARGE_FILE_THRESHOLD;
+            
+            log.info(`Tamanho do PDF: ${(pdfBuffer.length / (1024 * 1024)).toFixed(2)} MB`);
+            log.info(`Método de assinatura: ${isLargeFile ? 'STREAMING (arquivo grande)' : 'BUFFER (arquivo pequeno)'}`);
+            
+            if (isLargeFile) {
+                // ============================================
+                // ARQUIVOS GRANDES: Usar StreamSigner
+                // ============================================
+                log.info('Usando StreamSigner para arquivo grande...');
+                
+                // Criar arquivos temporários
+                const tempDir = os.tmpdir();
+                const tempInputPath = path.join(tempDir, `pzsign-input-${Date.now()}.pdf`);
+                const tempOutputPath = path.join(tempDir, `pzsign-output-${Date.now()}.pdf`);
+                
+                try {
+                    // 1. Salvar buffer em arquivo temporário
+                    log.info('Salvando PDF temporário...');
+                    fs.writeFileSync(tempInputPath, pdfBuffer);
+                    
+                    // 2. Recriar P12 com cadeia completa
+                    log.info('Recriando P12 com cadeia completa de certificados...');
+                    const p12Asn1 = forge.pkcs12.toPkcs12Asn1(
+                        this.privateKey,
+                        this.certificateChain,
+                        '',
+                        {
+                            generateLocalKeyId: true,
+                            friendlyName: 'Certificado Digital ICP-Brasil',
+                            algorithm: '3des'
+                        }
+                    );
+                    
+                    const p12Buffer = Buffer.from(forge.asn1.toDer(p12Asn1).getBytes(), 'binary');
+                    log.info(`P12 recriado com ${this.certificateChain.length} certificados na cadeia`);
+                    
+                    // 3. Usar StreamSigner para assinar
+                    log.info('Iniciando assinatura via streaming...');
+                    const streamSigner = new StreamSigner();
+                    
+                    await streamSigner.sign(
+                        tempInputPath,
+                        p12Buffer,
+                        {
+                            outputPath: tempOutputPath,
+                            reason: 'Assinatura digital com certificado ICP-Brasil',
+                            contactInfo: 'PaperZero Digital Signature',
+                            name: signerName,
+                            location: 'Brasil'
+                        }
+                    );
+                    
+                    log.info('✅ Assinatura via streaming concluída!');
+                    
+                    // 4. Ler PDF assinado
+                    const signedPdf = fs.readFileSync(tempOutputPath);
+                    log.info(`PDF assinado lido: ${(signedPdf.length / (1024 * 1024)).toFixed(2)} MB`);
+                    
+                    return signedPdf;
+                    
+                } finally {
+                    // Limpar arquivos temporários
+                    try {
+                        if (fs.existsSync(tempInputPath)) fs.unlinkSync(tempInputPath);
+                        if (fs.existsSync(tempOutputPath)) fs.unlinkSync(tempOutputPath);
+                        log.info('Arquivos temporários removidos');
+                    } catch (cleanupError) {
+                        log.warn('Erro ao limpar arquivos temporários:', cleanupError.message);
+                    }
+                }
+                
+            } else {
+                // ============================================
+                // ARQUIVOS PEQUENOS: Usar método tradicional
+                // ============================================
+                log.info('Usando método tradicional para arquivo pequeno...');
+                log.info('Adicionando placeholder de assinatura...');
+                
+                const pdfWithPlaceholder = plainAddPlaceholder({
+                    pdfBuffer,
+                    reason: 'Assinatura digital com certificado ICP-Brasil',
+                    contactInfo: 'PaperZero Digital Signature',
+                    name: signerName,
+                    location: 'Brasil'
+                });
+                
+                log.info('Placeholder adicionado com sucesso');
+                log.info('Recriando P12 com cadeia completa de certificados...');
+                
+                const p12Asn1 = forge.pkcs12.toPkcs12Asn1(
+                    this.privateKey,
+                    this.certificateChain,
+                    '',
+                    {
+                        generateLocalKeyId: true,
+                        friendlyName: 'Certificado Digital ICP-Brasil',
+                        algorithm: '3des'
+                    }
+                );
+                
+                const p12Buffer = Buffer.from(forge.asn1.toDer(p12Asn1).getBytes(), 'binary');
+                log.info(`P12 recriado com ${this.certificateChain.length} certificados na cadeia`);
+                
+                log.info('Aplicando assinatura digital...');
+                const signer = new SignPdf();
+                const signedPdf = signer.sign(pdfWithPlaceholder, p12Buffer);
+                
+                log.info('✅ Assinatura digital aplicada com sucesso!');
+                return signedPdf;
+            }
+            
+        } catch (error) {
+            log.error('Erro ao adicionar assinatura digital:', error.message);
+            log.error('Stack trace:', error.stack);
+            throw new Error(`Falha ao assinar digitalmente: ${error.message}`);
+        }
+    }
+
+    async addSignatureReportPage(pdfDoc, signatureHash, signerName, signatureDate, originalPath, originalDocHash) {
+        try {
+            // Adicionar nova página
+            const page = pdfDoc.addPage([595.276, 841.89]); // A4
+            const { width, height } = page.getSize();
+            
+            // Fontes
+            const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+            const regularFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
+            
+            // Cores
+            const darkBlue = rgb(0.1, 0.2, 0.4);
+            const gray = rgb(0.5, 0.5, 0.5);
+            const lightGray = rgb(0.9, 0.9, 0.9);
+            
+            // Carregar e embedar as imagens
+            let logoImage = null;
+            let icpImage = null;
+            let itiImage = null;
+            
+            try {
+                // Carregar logo PaperZero
+                const logoPath = path.join(__dirname, '..', 'assets', 'images', 'paper-zero.png');
+                if (fs.existsSync(logoPath)) {
+                    const logoBytes = fs.readFileSync(logoPath);
+                    logoImage = await pdfDoc.embedPng(logoBytes);
+                    log.info('Logo PaperZero carregado com sucesso');
+                } else {
+                    log.warn('Logo PaperZero não encontrado:', logoPath);
+                }
+            } catch (error) {
+                log.warn('Erro ao carregar logo PaperZero:', error.message);
+            }
+            
+            try {
+                // Carregar selo ITI Qualificada
+                const itiPath = path.join(__dirname, '..', 'assets', 'images', 'iti-qualificada.png');
+                if (fs.existsSync(itiPath)) {
+                    const itiBytes = fs.readFileSync(itiPath);
+                    itiImage = await pdfDoc.embedPng(itiBytes);
+                    log.info('Selo ITI Qualificada carregado com sucesso');
+                } else {
+                    log.warn('Selo ITI Qualificada não encontrado:', itiPath);
+                }
+            } catch (error) {
+                log.warn('Erro ao carregar selo ITI Qualificada:', error.message);
+            }
+            
+            try {
+                // Carregar selo ICP-Brasil
+                const icpPath = path.join(__dirname, '..', 'assets', 'images', 'icp-brasil.png');
+                if (fs.existsSync(icpPath)) {
+                    const icpBytes = fs.readFileSync(icpPath);
+                    icpImage = await pdfDoc.embedPng(icpBytes);
+                    log.info('Selo ICP-Brasil carregado com sucesso');
+                } else {
+                    log.warn('Selo ICP-Brasil não encontrado:', icpPath);
+                }
+            } catch (error) {
+                log.warn('Erro ao carregar selo ICP-Brasil:', error.message);
+            }
+            
+            let yPosition = height - 50;
+            
+            // Desenhar logo PaperZero no topo (alinhado à esquerda)
+            if (logoImage) {
+                const logoWidth = 220; // Aumentado de 150 para 200
+                const logoHeight = (logoImage.height / logoImage.width) * logoWidth;
+                
+                page.drawImage(logoImage, {
+                    x: 50,
+                    y: yPosition - logoHeight,
+                    width: logoWidth,
+                    height: logoHeight,
+                });
+                
+                yPosition -= logoHeight + 30; // Espaço após o logo
+            } else {
+                // Fallback: desenhar texto se logo não carregar
+                page.drawText('PzSign', {
+                    x: 50,
+                    y: yPosition,
+                    size: 24,
+                    font: boldFont,
+                    color: darkBlue,
+                });
+                yPosition -= 40;
+            }
+            
+            // Subtitle com imagem ITI ao lado
+            page.drawText('Relatório de Assinaturas', {
+                x: 50,
+                y: yPosition,
+                size: 16,
+                font: boldFont,
+                color: darkBlue,
+            });
+
+            // Adicionar imagem ITI ao lado do status
+            if (itiImage) {
+                const itiWidth = 120; // Aumentado de 80 para 120 para ficar mais alta
+                const itiHeight = (itiImage.height / itiImage.width) * itiWidth;
+
+                page.drawImage(itiImage, {
+                    x: width - itiWidth - 50, // Alinhado à direita com margem de 50
+                    y: yPosition - 40, // Abaixo do status (na visão do usuário, Y menor = mais baixo)
+                    width: itiWidth,
+                    height: itiHeight,
+                });
+            }
+            
+            yPosition -= 20;
+            page.drawText('Dados e horários em UTC-3 | América/São Paulo', {
+                x: 50,
+                y: yPosition,
+                size: 10,
+                font: regularFont,
+                color: gray,
+            });
+            
+            yPosition -= 10;
+            page.drawText(`Última atualização em ${signatureDate.toLocaleDateString('pt-BR')} ${signatureDate.toLocaleTimeString('pt-BR')}`, {
+                x: 50,
+                y: yPosition,
+                size: 10,
+                font: regularFont,
+                color: gray,
+            });
+            
+            yPosition -= 40;
+            
+            // Status
+            page.drawText('Status: Assinado', {
+                x: 50,
+                y: yPosition,
+                size: 12,
+                font: boldFont,
+                color: rgb(0, 0.6, 0), // Verde
+            });
+            
+            yPosition -= 20;
+            const fileName = path.basename(originalPath);
+            page.drawText(`Documento: ${fileName}`, {
+                x: 50,
+                y: yPosition,
+                size: 10,
+                font: regularFont,
+                color: gray,
+            });
+            
+            yPosition -= 15;
+            page.drawText(`Número: ${signatureHash}`, {
+                x: 50,
+                y: yPosition,
+                size: 10,
+                font: regularFont,
+                color: gray,
+            });
+            
+            yPosition -= 15;
+            page.drawText(`Data da criação: ${signatureDate.toLocaleDateString('pt-BR')} ${signatureDate.toLocaleTimeString('pt-BR')}`, {
+                x: 50,
+                y: yPosition,
+                size: 10,
+                font: regularFont,
+                color: gray,
+            });
+            
+            yPosition -= 15;
+            page.drawText(`Hash do documento original (SHA256):`, {
+                x: 50,
+                y: yPosition,
+                size: 10,
+                font: regularFont,
+                color: gray,
+            });
+            
+            yPosition -= 12;
+            page.drawText(`${originalDocHash}`, {
+                x: 50,
+                y: yPosition,
+                size: 8,
+                font: regularFont,
+                color: gray,
+            });
+            
+            yPosition -= 40;
+            
+            // Seção de Assinaturas
+            page.drawText('Assinaturas', {
+                x: 50,
+                y: yPosition,
+                size: 14,
+                font: boldFont,
+                color: darkBlue,
+            });
+            
+            page.drawText('1 de 1 Assinaturas', {
+                x: width - 150,
+                y: yPosition,
+                size: 10,
+                font: regularFont,
+                color: gray,
+            });
+            
+            yPosition -= 30;
+            
+            // Box da assinatura
+            const boxHeight = 120;
+            page.drawRectangle({
+                x: 50,
+                y: yPosition - boxHeight,
+                width: width - 100,
+                height: boxHeight,
+                borderColor: rgb(0.8, 0.8, 0.8),
+                borderWidth: 1,
+                color: rgb(0.98, 0.98, 0.98),
+            });
+            
+            // Status da assinatura
+            page.drawText('Assinado', {
+                x: 60,
+                y: yPosition - 20,
+                size: 10,
+                font: boldFont,
+                color: rgb(0, 0.6, 0),
+            });
+            
+            page.drawText('* via PzSign by PaperZero', {
+                x: 120,
+                y: yPosition - 20,
+                size: 10,
+                font: regularFont,
+                color: rgb(0, 0.6, 0),
+            });
+            
+            // Nome do signatário
+            page.drawText(signerName, {
+                x: 60,
+                y: yPosition - 40,
+                size: 12,
+                font: boldFont,
+                color: rgb(0, 0, 0),
+            });
+            
+            // Data e hora
+            page.drawText(`Data e hora da assinatura: ${signatureDate.toLocaleDateString('pt-BR')} ${signatureDate.toLocaleTimeString('pt-BR')}`, {
+                x: 60,
+                y: yPosition - 55,
+                size: 10,
+                font: regularFont,
+                color: gray,
+            });
+            
+            // Token
+            page.drawText(`Token: ${signatureHash}`, {
+                x: 60,
+                y: yPosition - 70,
+                size: 10,
+                font: regularFont,
+                color: gray,
+            });
+            
+            // Pontos de autenticação
+            page.drawText('Pontos de autenticação:', {
+                x: 60,
+                y: yPosition - 90,
+                size: 10,
+                font: boldFont,
+                color: rgb(0, 0, 0),
+            });
+            
+            page.drawText('Certificado Digital ICP-Brasil', {
+                x: 60,
+                y: yPosition - 105,
+                size: 10,
+                font: regularFont,
+                color: gray,
+            });
+            
+            yPosition -= 150;
+            
+            // Footer com selo ICP-Brasil (alinhado à direita)
+            const footerTextY = 80; // Y da primeira linha do texto (INTEGRIDADE CERTIFICADA)
+            
+            if (icpImage) {
+                const icpWidth = 70;
+                const icpHeight = (icpImage.height / icpImage.width) * icpWidth;
+                
+                page.drawImage(icpImage, {
+                    x: width - icpWidth - 50, // Alinhado à direita com margem de 50
+                    y: footerTextY - icpHeight + 15, // Subir 15px para não descer demais
+                    width: icpWidth,
+                    height: icpHeight,
+                });
+            }
+            
+            // Footer - Integridade certificada
+            page.drawText('INTEGRIDADE CERTIFICADA - ICP-BRASIL', {
+                x: 50,
+                y: 80,
+                size: 12,
+                font: boldFont,
+                color: darkBlue,
+            });
+            
+            page.drawText('Assinaturas eletrônicas e físicas têm igual validade legal, conforme MP 2.200-2/2001 e Lei 14.063/2020.', {
+                x: 50,
+                y: 65,
+                size: 9,
+                font: regularFont,
+                color: gray,
+            });
+            
+            page.drawText('Este Log é exclusivo e parte integrante do documento número', {
+                x: 50,
+                y: 50,
+                size: 9,
+                font: regularFont,
+                color: gray,
+            });
+            
+            page.drawText(`${signatureHash}, segundo os Termos de Uso da PaperZero, disponíveis em paperzero.app.br`, {
+                x: 50,
+                y: 35,
+                size: 8,
+                font: regularFont,
+                color: gray,
+            });
+            
+        } catch (error) {
+            log.error('Erro ao adicionar página de relatório:', error);
+            throw error;
+        }
+    }
+}
+
+module.exports = PDFProcessor;
